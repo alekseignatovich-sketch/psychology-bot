@@ -98,7 +98,7 @@ async def fetch_and_post():
 async def main():
     await send_test_message()
     scheduler = AsyncIOScheduler()
-    interval_hours = int(os.getenv("POST_INTERVAL_HOURS", 6))
+    interval_hours = int(os.getenv("POST_INTERVAL_HOURS", 1))
     scheduler.add_job(fetch_and_post, 'interval', hours=interval_hours)
     scheduler.start()
     logging.info(f"✅ Бот 'Психология семьи' запущен. Интервал: {interval_hours} ч.")
