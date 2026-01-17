@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import logging
 import re
+import json
 from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
@@ -18,9 +19,10 @@ if not BOT_TOKEN or not CHANNEL_ID:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Нейтральный GIF по умолчанию (можно заменить на своё изображение)
-DEFAULT_GIF_URL = "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"  # абстрактная гармония
+# Нейтральный GIF по умолчанию (гармония, семья, спокойствие)
+DEFAULT_GIF_URL = "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
 
+# Источники: только русскоязычные и рабочие
 FEEDS = [
     {"name": "Психология.ру", "url": "https://www.psychology.ru/rss/", "tag": "🧠 Психология"},
     {"name": "Psychologies.ru", "url": "https://psychologies.ru/rss/", "tag": "❤️ Отношения"},
@@ -29,11 +31,35 @@ FEEDS = [
     {"name": "Психология отношений (TG)", "url": "https://rsshub.app/telegram/channel/psihologiya_otnosheniy", "tag": "💬 Советы"},
 ]
 
+# Файл для хранения опубликованных ссылок
+SEEN_POSTS_FILE = "/tmp/seen_posts.json"
+
 def is_valid_image_url(url):
     if not url:
         return False
     parsed = urlparse(url)
     return bool(parsed.netloc) and bool(parsed.scheme) and url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp'))
+
+def load_seen_posts():
+    if os.path.exists(SEEN_POSTS_FILE):
+        try:
+            with open(SEEN_POSTS_FILE, "r") as f:
+                return set(json.load(f))
+        except Exception as e:
+            logging.warning(f"Не удалось загрузить историю: {e}")
+            return set()
+    return set()
+
+def save_seen_post(post_id):
+    seen = load_seen_posts()
+    seen.add(post_id)
+    # Ограничиваем размер списка
+    seen = set(list(seen)[-100:])
+    try:
+        with open(SEEN_POSTS_FILE, "w") as f:
+            json.dump(list(seen), f)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения истории: {e}")
 
 async def send_test_message():
     try:
@@ -52,25 +78,37 @@ async def send_post(bot, channel_id, caption, image_url=None):
         else:
             await bot.send_animation(chat_id=channel_id, animation=DEFAULT_GIF_URL, caption=caption, parse_mode="HTML")
     except Exception as e:
-        logging.error(f"Ошибка отправки: {e}")
+        logging.error(f"Ошибка отправки поста: {e}")
         await bot.send_message(chat_id=channel_id, text=caption, parse_mode="HTML")
 
 async def fetch_and_post():
     logging.info("🔄 Проверка источников по психологии...")
+    seen_posts = load_seen_posts()
     for feed in FEEDS:
         try:
             logging.info(f"Источник: {feed['name']}")
             parsed = feedparser.parse(feed["url"])
             if parsed.entries:
                 entry = parsed.entries[0]
-                title = entry.get("title", "Без заголовка")
-                link = entry.get("link", "")
+                title = entry.get("title", "Без заголовка").strip()
+                link = entry.get("link", "").strip()
+
+                if not link or not title:
+                    logging.info(f"⚠️ Пропущено: нет ссылки или заголовка ({feed['name']})")
+                    continue
+
+                # Защита от дублей
+                if link in seen_posts:
+                    logging.info(f"⏭️ Уже опубликовано: {title}")
+                    continue
+
                 caption = (
                     f'{feed["tag"]}\n\n'
                     f'<b>{title}</b>\n\n'
                     f'🔗 <a href="{link}">Читать оригинал</a>'
                 )
 
+                # Поиск изображения
                 image_url = None
                 if hasattr(entry, 'enclosures') and entry.enclosures:
                     for enc in entry.enclosures:
@@ -88,17 +126,20 @@ async def fetch_and_post():
 
                 await send_post(bot, CHANNEL_ID, caption, image_url)
                 logging.info(f"✅ Опубликовано: {title}")
+
+                # Сохраняем ссылку
+                save_seen_post(link)
                 await asyncio.sleep(1)
             else:
                 logging.info(f"ℹ️ Нет записей: {feed['name']}")
         except Exception as e:
-            logging.error(f"Ошибка {feed['name']}: {e}")
+            logging.error(f"Ошибка при обработке {feed['name']}: {e}")
     logging.info("🔚 Проверка завершена.")
 
 async def main():
     await send_test_message()
     scheduler = AsyncIOScheduler()
-    interval_hours = int(os.getenv("POST_INTERVAL_HOURS", 12))
+    interval_hours = int(os.getenv("POST_INTERVAL_HOURS", 6))
     scheduler.add_job(fetch_and_post, 'interval', hours=interval_hours)
     scheduler.start()
     logging.info(f"✅ Бот 'Психология семьи' запущен. Интервал: {interval_hours} ч.")
